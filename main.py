@@ -77,7 +77,7 @@ def crop_head(im_pth: Path) -> list[Path]:
     return ret
 
 
-def tag_img(im_pth: Path, delimiter: str = "\n") -> Path:
+def tag_img(im_pth: Path, delimiter: str = ",") -> Path:
     """Tag image and return the written text file"""
     if im_pth.suffix not in IMG_EXT:
         return
@@ -90,6 +90,8 @@ def tag_img(im_pth: Path, delimiter: str = "\n") -> Path:
     ratings, general_tags, character_tags = get_wd14_tags(
         im_pth,
         "EVA02_Large",
+        no_underline=True,
+        drop_overlap=True,
         # general_mcut_enabled=True,
         # character_mcut_enabled=True,
         #
@@ -153,19 +155,19 @@ def restore_scu(im_pth: Path) -> Path:
     scu.save(out, lossless=True, method=6, exact=True)
 
 
-def get_tags(pth: Path, delim="\n") -> list[str]:
+def get_tags(pth: Path, delim=",") -> list[str]:
     with pth.open("r") as fd:
         contents = fd.read()
 
     return contents.split(delim)
 
 
-def write_tags(pth: Path, tags: list[str], delim="\n"):
+def write_tags(pth: Path, tags: list[str], delim=","):
     with open(pth, "w") as fd:
         fd.write(delim.join(tags))
 
 
-def prepend_tag(pth: Path, tag: str, delim="\n"):
+def prepend_tag(pth: Path, tag: str, delim=","):
     if pth.suffix != ".txt":
         return
 
@@ -197,7 +199,7 @@ def main():
 
     args = parser.parse_args()
 
-    for dir in WORKSPACE:
+    for dir in WORKSPACE + [DONE, RAW]:
         dir.mkdir(exist_ok=True)
 
     if args.clean:
