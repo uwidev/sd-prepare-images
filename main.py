@@ -84,7 +84,7 @@ def tag_img(im_pth: Path, delimiter: str = "\n") -> Path:
 
     out = Path(f"./{im_pth.parent}/{im_pth.stem}.txt")
     if out.exists():
-        print(f"tag already exists for {im_pth.stem}")
+        print(f"tags already exists for {im_pth.stem}")
         return out
 
     ratings, general_tags, character_tags = get_wd14_tags(
@@ -171,7 +171,7 @@ def prepend_tag(pth: Path, tag: str, delim="\n"):
 
     tags = get_tags(pth, delim)
     if tag in tags:
-        print(f"tag already exists for {pth}")
+        print(f"tag {tag} already exists for {pth}")
         return
 
     write_tags(pth, [tag] + tags, delim)
