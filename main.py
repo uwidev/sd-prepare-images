@@ -180,18 +180,20 @@ def prepend_tag(pth: Path, tag: str, delim="\n"):
 def main():
     parser = argparse.ArgumentParser(description="Preprocess images for AI training.")
 
+    parser.add_argument("--clean", action="store_true", help="clean workspace")
+    parser.add_argument("--restore", action="store_true", help="restore images")
+    parser.add_argument("--crop", action="store_true", help="crop images")
+    parser.add_argument("--upscale", action="store_true", help="upscale images")
     parser.add_argument(
-        "--clean", action="store_true", help="Delete all working images"
+        "--move",
+        action="store_true",
+        help="move finalized images and captions to ./done/",
     )
-    parser.add_argument("--restore", action="store_true", help="Restore images")
-    parser.add_argument("--crop", action="store_true", help="Crop images")
-    parser.add_argument("--upscale", action="store_true", help="Upscale images")
-    parser.add_argument("--move", action="store_true", help="Move images and captions")
-    parser.add_argument("--tag", action="store_true", help="Tag final images")
-    parser.add_argument("--tag-prepend", help="Prepend tag to all .txt files")
+    parser.add_argument("--tag", action="store_true", help="tag images in ./done/")
+    parser.add_argument("--tag-prepend", help="prepend tag to all captions in ./done/")
 
-    parser.add_argument("--stage-1", action="store_true", help="Restore and crop")
-    parser.add_argument("--stage-2", action="store_true", help="Upscale and move")
+    parser.add_argument("--stage-1", action="store_true", help="restore and crop")
+    parser.add_argument("--stage-2", action="store_true", help="upscale and move")
 
     args = parser.parse_args()
 
