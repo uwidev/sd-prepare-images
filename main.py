@@ -55,7 +55,7 @@ def crop_head(im_pth: Path) -> list[Path]:
         return
 
     ret: list = []
-    out = HEAD / f"{im_pth.stem}.webp"
+    out = HEAD / f"{im_pth.stem}-head.webp"
     if out.exists():
         print(f"cropped head already exists for {im_pth.stem}")
         return [out]
