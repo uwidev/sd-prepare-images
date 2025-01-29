@@ -1,7 +1,7 @@
 #!/bin/env python
 
 from imgutils.detect import detect_heads, detection_visualize
-from imgutils.tagging.wd14 import get_wd14_tags
+from imgutils.tagging import wd14, overlap
 from imgutils.upscale.cdc import upscale_with_cdc
 from imgutils.restore import adversarial, nafnet, scunet
 from pathlib import Path
@@ -77,34 +77,40 @@ def crop_head(im_pth: Path) -> list[Path]:
     return ret
 
 
-def tag_img(im_pth: Path, delimiter: str = ",") -> Path:
+def tag_img(im_pth: Path, delim: str = ",", drop_overlap=False) -> Path:
     """Tag image and return the written text file"""
     if im_pth.suffix not in IMG_EXT:
         return
 
     out = Path(f"./{im_pth.parent}/{im_pth.stem}.txt")
     if out.exists():
-        print(f"tags already exists for {im_pth.stem}")
-        return out
+        # if tag already exists, just do some cleanup?
+        if drop_overlap:
+            og = get_tags(out, delim)
+            tags = overlap.drop_overlap_tags(og)
+            if og != tags:
+                print(out)
+                print(set(og).difference(set(tags)))
+                print()
+            write_tags(out, tags)
+    else:
+        ratings, general_tags, character_tags = wd14.get_wd14_tags(
+            im_pth,
+            "EVA02_Large",
+            no_underline=True,
+            drop_overlap=True,
+            # general_mcut_enabled=True,
+            # character_mcut_enabled=True,
+            #
+            # Mcut dynamically determines threshold as the point of max
+            # difference. Might be useful for training concepts...? But not style
+            # as it prunes too much.
+        )
 
-    ratings, general_tags, character_tags = get_wd14_tags(
-        im_pth,
-        "EVA02_Large",
-        no_underline=True,
-        drop_overlap=True,
-        # general_mcut_enabled=True,
-        # character_mcut_enabled=True,
-        #
-        # Mcut dynamically determines threshold as the point of max
-        # difference. Might be useful for training concepts...? But not style
-        # as it prunes too much.
-    )
+        rating = sorted(ratings.items(), key=lambda item: item[1], reverse=True)[0][0]
 
-    rating = sorted(ratings.items(), key=lambda item: item[1], reverse=True)[0][0]
-
-    tags = [rating] + list(general_tags.keys()) + list(character_tags.keys())
-
-    write_tags(out, tags)
+        tags = [rating] + list(general_tags.keys()) + list(character_tags.keys())
+        write_tags(out, tags)
 
     return out
 
@@ -163,7 +169,7 @@ def get_tags(pth: Path, delim=",") -> list[str]:
 
 
 def write_tags(pth: Path, tags: list[str], delim=","):
-    with open(pth, "w") as fd:
+    with pth.open("w") as fd:
         fd.write(delim.join(tags))
 
 
@@ -173,8 +179,7 @@ def prepend_tag(pth: Path, tag: str, delim=","):
 
     tags = get_tags(pth, delim)
     if tag in tags:
-        print(f"tag {tag} already exists for {pth}")
-        return
+        tags.remove(tag)
 
     write_tags(pth, [tag] + tags, delim)
 
@@ -243,7 +248,7 @@ def main():
 
     if args.tag:
         for pth in DONE.iterdir():
-            tag_img(pth)
+            tag_img(pth, drop_overlap=True)
 
     if args.tag_prepend:
         for pth in DONE.iterdir():
