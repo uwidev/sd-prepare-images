@@ -25,6 +25,7 @@ WORKSPACE: list[Path] = [SCU, CROP, UP]
 
 class LABEL(Enum):
     HEAD = "head"
+    HCAT = "hcat"
     SHLD = "shld"
     BUST = "bust"
     BOOB = "boob"
@@ -34,6 +35,15 @@ class LABEL(Enum):
     NOPAN = "nopan"
     BUTT = "butt"
     ASS = "ass"
+
+
+class FRAMING(Enum):
+    PORTRAIT = [[LABEL.HEAD, LABEL.HCAT], [LABEL.SHLD]]
+    UPPER_BODY = [[LABEL.HEAD, LABEL.HCAT], [LABEL.BUST, LABEL.BOOB, LABEL.SIDEB]]
+    COWBOY_SHOT = [
+        [LABEL.HEAD, LABEL.HCAT],
+        [LABEL.HIP, LABEL.NOPAN, LABEL.BUTT, LABEL.ASS],
+    ]
 
 
 # amount of heads down from bottom of head to center of body part
@@ -179,7 +189,9 @@ def create_head_body_bbox_pairs(
 
     # a list of indices that correspond to their location
     # in ybox, ylabel, yconf
-    heads_index_ref = find_indices(LABEL.HEAD.value, ylabel)
+    heads_index_ref = find_indices(LABEL.HCAT.value, ylabel) + find_indices(
+        LABEL.HEAD.value, ylabel
+    )
     if not heads_index_ref:
         logger.debug("no head or not good enough")
         return None
@@ -243,14 +255,14 @@ def create_head_body_bbox_pairs(
                     logger.debug("")
 
                 logger.debug("")
-                if found and not crop_all:
+                if found:
                     break
 
             logger.debug("")
-            if found and not crop_all:
+            if found:
                 break
 
-        if not found:
+        if not found or crop_all:
             logger.debug("not found, appending only head")
             ybboxes.append([head])
 
@@ -384,13 +396,8 @@ def upscale(im_pth: Path) -> Path:
 
     im: Image = Image.open(im_pth)
     px = im.width * im.height
-    if px < 768 * 768:  # x2
-        im_up = upscale_with_cdc(im_pth)
-        # if px < 1024 * 1024:
-        #     im_up = upscale_with_cdc(im_pth, "HGSR-MHR_X2_1680")
-        # else:  # x4
-        #     im_up = upscale_with_cdc(im_pth)
-
+    if px < 512 * 512:  # x2 if < 0.25MP
+        im_up = upscale_with_cdc(im_pth, "HGSR-MHR_X2_1680")
         im_up.save(
             out,
             lossless=True,
@@ -447,10 +454,25 @@ def main():
 
     parser.add_argument("--clean", action="store_true", help="clean workspace")
     parser.add_argument("--restore", action="store_true", help="restore images")
+
+    # TODO: let user decide what to keep
+    # - keep head
+    # - keep portrait
+    # - keep upper body
+    # - keep cowboy shot
+    # - keep full body
+    # - keep eyes
+    # - keep with hands (maybe?)
+    # ---
+    # at the moment, only keeps portrait/upper body/cowboy shot, trashes head
+    # if keep all, keeps both
+
     parser.add_argument(
-        "--crop", action="store_true", help="crop images, keep only first"
+        "--crop", action="store_true", help="crop images, keep only head"
     )
-    parser.add_argument("--crop-all", action="store_true", help="crop images, keep all")
+    parser.add_argument(
+        "--crop-all", action="store_true", help="crop images, keep head + extended"
+    )
     parser.add_argument("--upscale", action="store_true", help="upscale images")
     parser.add_argument(
         "--move",
