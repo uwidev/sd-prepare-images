@@ -8,8 +8,11 @@ from pathlib import Path
 from PIL import Image
 import shutil
 import os
+import sys
+from enum import Enum
 import argparse
 from matplotlib import pyplot as plt
+from loguru import logger
 
 IMG_EXT: list[str] = [".png", ".jpeg", ".jpg", ".webp"]
 SCU: Path = Path("./workspace/scu/")
@@ -18,6 +21,32 @@ UP: Path = Path("./workspace/up/")
 RAW: Path = Path("./raw/")
 DONE: Path = Path("./done/")
 WORKSPACE: list[Path] = [SCU, CROP, UP]
+
+
+class LABEL(Enum):
+    HEAD = "head"
+    SHLD = "shld"
+    BUST = "bust"
+    BOOB = "boob"
+    SIDEB = "sideb"
+    BELLY = "belly"
+    HIP = "hip"
+    NOPAN = "nopan"
+    BUTT = "butt"
+    ASS = "ass"
+
+
+# amount of heads down from bottom of head to center of body part
+class SEARCH(Enum):
+    SHLD = 0.5
+    BUST = 1.0
+    BOOB = 1.0
+    SIDEB = 1.0
+    BELLY = 1.5
+    HIP = 1.75
+    NOPAN = 1.75
+    BUTT = 1.75
+    ASS = 1.75
 
 
 def pad_bbox(bbox: list[int], amount: int):
@@ -50,35 +79,7 @@ def exists_handler(p: Path) -> Path:
     return p.parent / f"{name}_{number}{ext}"
 
 
-def crop_head(im_pth: Path) -> list[Path]:
-    """Crop heads and return a the path of the output"""
-    if im_pth.suffix not in IMG_EXT:
-        return
-
-    ret: list = []
-    out = CROP / f"{im_pth.stem}-head.webp"
-    if out.exists():
-        print(f"cropped head already exists for {im_pth.stem}")
-        return [out]
-
-    result = detect_heads(im_pth)
-
-    im = Image.open(im_pth)
-    for bbox, cropping_for, conf in result:
-        out = exists_handler(out)
-        crop = im.crop(bbox)
-        crop.save(
-            out,
-            lossless=True,
-            method=6,
-            exact=True,
-        )
-        ret.append(out)
-
-    return ret
-
-
-def find_overlapping_bbox(
+def search_overlapping_bbox(
     reference: list[int, int, int, int],
     bboxes: list[list[int, int, int, int]],
     search_multiplier: float = 1.2,
@@ -86,20 +87,7 @@ def find_overlapping_bbox(
     """Find the closest bounding box given bounding boxes
 
     Returns the index and the bbox"""
-    # print(f"\nreference bbox {reference}")
-    width = reference[2] - reference[0]
-    height = reference[3] - reference[1]
-    # print(f"{width=}")
-    # print(f"{height=}")
-
-    mult = search_multiplier - 1
-    search_bbox = [
-        int(reference[0] - width * mult),
-        int(reference[1] - height * mult),
-        int(reference[2] + width * mult),
-        int(reference[3] + height * mult),
-    ]
-    # print(f"search bbox {search_bbox}\n")
+    search_bbox = expand_bbox(reference, search_multiplier)
 
     for i, bbox in enumerate(bboxes):
         if is_bboxes_overlapping(search_bbox, bbox):
@@ -108,10 +96,52 @@ def find_overlapping_bbox(
     return None, None
 
 
-def is_bboxes_overlapping(b1, b2):
-    # print(f"{b1=}")
-    # print(f"{b2=}")
+def expand_bbox(
+    box,
+    mult: float,
+    *,
+    contract_before: float = 0.0,
+    left=True,
+    up=True,
+    right=True,
+    down=True,
+):
+    """Expand a bounding box by a percent multiplier.
 
+    You can specify the direction to expand. Optionally contracts the box
+    before expanding, but it won't contract directions to be expanded.
+    """
+    width = box[2] - box[0]
+    height = box[3] - box[1]
+    left = int(left)
+    up = int(up)
+    right = int(right)
+    down = int(down)
+
+    # logger.debug("og width={}", width)
+    logger.debug("height of head={}", height)
+
+    _box = [
+        int(box[0] + width * contract_before / 2 * (1 - left)),
+        int(box[1] + height * contract_before / 2 * (1 - up)),
+        int(box[2] - width * contract_before / 2 * (1 - right)),
+        int(box[3] - height * contract_before / 2 * (1 - down)),
+    ]
+
+    # new_width = _box[2] - _box[0]
+    # logger.debug("contracted width = {}", new_width)
+    # logger.debug("real % shrunk = {}", (width - new_width) / width)
+    logger.debug("contracted head={}", _box)
+
+    return [
+        int(_box[0] - width * mult * left),
+        int(_box[1] - height * mult * up),
+        int(_box[2] + width * mult * right),
+        int(_box[3] + height * mult * down),
+    ]
+
+
+def is_bboxes_overlapping(b1, b2):
     # Unpack the coordinates
     x1_1, y1_1, x2_1, y2_1 = b1
     x1_2, y1_2, x2_2, y2_2 = b2
@@ -127,126 +157,151 @@ def is_bboxes_overlapping(b1, b2):
     return True
 
 
-def crop_dynamic(im_pth: Path) -> list[Path]:
+def create_head_body_bbox_pairs(
+    yres: list[tuple[tuple[int, int, int, int], str, float]],
+    threshold: float,
+    *,
+    crop_all: bool,
+):
+    """
+
+    Given a list of (head) bboxes references, search for the closest
+    expected bbox (preference) to the reference.
+    """
+    ybox, ylabel, yconf = zip(*yres)
+    ybox: list[tuple[tuple[int, int, int, int]]]
+    ylabel: list[str]
+    yconf: list[float]
+
+    logger.debug("finding matching part...")
+    # each element of ybboxes supposedly belongs to one body
+    ybboxes: list[list[list[int, int, int, int]]] = []
+
+    # a list of indices that correspond to their location
+    # in ybox, ylabel, yconf
+    heads_index_ref = find_indices(LABEL.HEAD.value, ylabel)
+    if not heads_index_ref:
+        logger.debug("no head or not good enough")
+        return None
+
+    heads = gather_bboxes(heads_index_ref, ybox, yconf, threshold)
+
+    logger.debug("heads={}", heads)
+
+    preference = [
+        LABEL.SHLD,
+        LABEL.BUST,
+        LABEL.BOOB,
+        LABEL.SIDEB,
+        LABEL.BELLY,
+        LABEL.HIP,
+        LABEL.NOPAN,
+        LABEL.BUTT,
+        LABEL.ASS,
+    ]
+
+    for i, head in enumerate(heads):
+        logger.debug("")
+        logger.debug(">>> HEAD {}", head)
+        dir_search = {
+            "down": {"left": 0, "up": 0, "right": 0},
+            "not_down": {"down": 0},
+            "all": {},
+        }
+        # look down, if not work look left/right, otherwise look all
+        for dir, dir_kwargs in dir_search.items():
+            logger.debug("dir={}", dir)
+            for prefer in preference:
+                found = False
+                logger.debug("looking for {}", prefer.value)
+                prefer: LABEL
+                bboxes_index_ref = find_indices(prefer.value, ylabel)
+                bboxes = gather_bboxes(bboxes_index_ref, ybox, yconf)
+
+                for j, bbox in enumerate(bboxes):
+                    # check if this bbox confidence is above threshold
+                    if yconf[bboxes_index_ref[j]] < threshold:
+                        logger.debug("low confidence, continuing...")
+                        continue
+
+                    logger.debug("found bbox {}", bbox)
+                    search_range = SEARCH[prefer.name].value
+                    logger.debug("search_range={}", search_range)
+
+                    head_ref_bbox_search = expand_bbox(
+                        head, search_range, contract_before=0.5, **dir_kwargs
+                    )
+                    logger.debug("head_ref_bbox_search={}", head_ref_bbox_search)
+                    closest = is_bboxes_overlapping(head_ref_bbox_search, bbox)
+
+                    if closest:
+                        logger.debug(f"found overlapping for {prefer.value}!")
+                        ybboxes.append([head, bbox])
+                        found = True
+                        break
+
+                    logger.debug("")
+
+                logger.debug("")
+                if found and not crop_all:
+                    break
+
+            logger.debug("")
+            if found and not crop_all:
+                break
+
+        if not found:
+            logger.debug("not found, appending only head")
+            ybboxes.append([head])
+
+    logger.debug("ybboxes={}", ybboxes)
+    return ybboxes
+
+
+def find_indices(query: str, reference: list) -> [int]:
+    """Find the indices where query exists in reference"""
+    return [i for i, value in enumerate(reference) if value == query]
+
+
+def gather_confs(indices: list[int], reference: list):
+    """Return a list with only given indices"""
+    return [reference[i] for i in indices]
+
+
+def gather_bboxes(
+    indices: list[int],
+    bboxes: list[tuple[int, int, int, int]],
+    confidences: list[float],
+    threshold: float = 0.0,
+):
+    """Return bboxes whose confidences are above the threshold"""
+    return [bboxes[i] for i in indices if confidences[i] > threshold]
+
+
+def crop_dynamic(im_pth: Path, crop_all: bool = False) -> list[Path]:
     """Crop preferring portrait, upper body, then head
     Return a the path of the output"""
+    logger.debug("starting crop on {}", im_pth.stem)
     if im_pth.suffix not in IMG_EXT:
         return
 
     ret: list = []
     out = CROP / f"{im_pth.stem}-crop.webp"
     if out.exists():
-        print(f"cropped head already exists for {im_pth.stem}")
+        logger.info("crop already exists for {}", im_pth.stem)
         return [out]
 
     # try yolo
-    threshold = 0.5
+    threshold = 0.3
     yres = booru_yolo.detect_with_booru_yolo(im_pth, "yolov8m_as03")
 
     # # debug show potential crops
     # plt.imshow(detection_visualize(im_pth, yres))
     # plt.show()
 
-    ybox, ylabel, yconf = zip(*yres)
-    ybox: list[tuple[tuple[int, int, int, int]]]
-    ylabel: list[str]
-    yconf: list[float]
-
-    def lbox(label: str) -> [int]:
-        return ybox[ylabel.index(label)]
-
-    def lconf(label: str) -> float:
-        return yconf[ylabel.index(label)]
-
-    def find_indices(label: str) -> [int]:
-        # find the indices where label exists in in yolo label list
-        return [i for i, ylabel in enumerate(ylabel) if ylabel == label]
-
-    def gather_confs(indices: list[int]):
-        return [yconf[i] for i in indices]
-
-    def gather_bboxes(indices: list[int]):
-        return [ybox[i] for i in indices]
-
-    # TODO: If there are multiple heads, find the closest bbox within some
-    # percentage of the head bbox These bboxes are assumed to be a pair.
-    def find_valid_yolo_bboxes():
-        """Find the two pairs of valid bboxes"""
-        # each element of ybboxes supposedly belongs to one body
-        ybboxes: list[list[list[int, int, int, int]]] = []
-
-        head_inds = find_indices("head")
-        if not head_inds:
-            # print("no head or not good enough")
-            return None
-
-        heads = gather_bboxes(head_inds)
-        ybboxes.extend([head] for head in heads)
-
-        # head+shoulder
-        # TODO: wasted compute, looks at all heads even if they are
-        shlds = gather_bboxes(find_indices("shld"))
-        for shld in shlds:
-            if "shld" in ylabel:
-                i, closest = find_overlapping_bbox(shld, heads)
-
-                if closest:
-                    if len(ybboxes[i]) == 1:  # head has no pair yet
-                        # print("adding shoulder pair")
-                        ybboxes[i].append(shld)
-
-            if all(len(body) == 2 for body in ybboxes):
-                return ybboxes
-
-        # head+bust
-        # TODO: wasted compute, looks at all heads even if they are
-        busts = gather_bboxes(find_indices("bust"))
-        for bust in busts:
-            if lconf("bust") > threshold:
-                i, closest = find_overlapping_bbox(bust, heads)
-
-                if closest:
-                    if len(ybboxes[i]) == 1:  # head has no pair yet
-                        # print("adding bust pair")
-                        ybboxes[i].append(bust)
-
-            if all(len(body) == 2 for body in ybboxes):
-                return ybboxes
-
-        # head+boob
-        # TODO: wasted compute, looks at all heads even if they are
-        boobs = gather_bboxes(find_indices("boob"))
-        # already paired
-        for boob in boobs:
-            if "boob" in ylabel and lconf("boob") > threshold:
-                i, closest = find_overlapping_bbox(boob, heads)
-
-                if closest:
-                    if len(ybboxes[i]) == 1:  # head has no pair yet
-                        # print("adding boob pair")
-                        ybboxes[i].append(boob)
-
-            if all(len(body) == 2 for body in ybboxes):
-                return ybboxes
-
-        # head+sideb
-        # TODO: wasted compute, looks at all heads even if they are
-        sidebs = gather_bboxes(find_indices("sideb"))
-        for sideb in sidebs:
-            if "sideb" in ylabel and lconf("sideb") > threshold:
-                i, closest = find_overlapping_bbox(sideb, heads)
-
-                if closest:
-                    if len(ybboxes[i]) == 1:  # head has no pair yet
-                        # print("adding sideb pair")
-                        ybboxes[i].append(sideb)
-            if all(len(body) == 2 for body in ybboxes):
-                return ybboxes
-
-        # head
-        return ybboxes
-
-    raw_bboxes: list[list[list[int, int, int, int]]] = find_valid_yolo_bboxes()
+    raw_bboxes: list[list[list[int, int, int, int]]] = create_head_body_bbox_pairs(
+        yres, threshold, crop_all=crop_all
+    )
 
     # no bounding boxes found
     if not raw_bboxes:
@@ -292,9 +347,9 @@ def tag_img(im_pth: Path, delim: str = ",", drop_overlap=False) -> Path:
             og = get_tags(out, delim)
             tags = overlap.drop_overlap_tags(og)
             # if og != tags:
-            #     print(out)
-            #     print(set(og).difference(set(tags)))
-            #     print()
+            #     logger.debug(out)
+            #     logger.debug(set(og).difference(set(tags)))
+            #     logger.debug('')
             write_tags(out, tags)
     else:
         ratings, general_tags, character_tags = wd14.get_wd14_tags(
@@ -324,7 +379,7 @@ def upscale(im_pth: Path) -> Path:
 
     out = UP / f"{im_pth.stem}.webp"
     if out.exists():
-        print(f"upscaling already exists for {im_pth.stem}")
+        logger.info("upscaling already exists for {}", im_pth.stem)
         return
 
     im: Image = Image.open(im_pth)
@@ -354,7 +409,7 @@ def restore_scu(im_pth: Path) -> Path:
 
     out = SCU / f"{im_pth.stem}.webp"
     if out.exists():
-        print(f"scu restore already exists for {im_pth.stem}")
+        logger.info("scu restore already exists for {}", im_pth.stem)
         return
 
     im: Image = Image.open(im_pth)
@@ -392,7 +447,10 @@ def main():
 
     parser.add_argument("--clean", action="store_true", help="clean workspace")
     parser.add_argument("--restore", action="store_true", help="restore images")
-    parser.add_argument("--crop", action="store_true", help="crop images")
+    parser.add_argument(
+        "--crop", action="store_true", help="crop images, keep only first"
+    )
+    parser.add_argument("--crop-all", action="store_true", help="crop images, keep all")
     parser.add_argument("--upscale", action="store_true", help="upscale images")
     parser.add_argument(
         "--move",
@@ -404,37 +462,72 @@ def main():
 
     parser.add_argument("--stage-1", action="store_true", help="restore and crop")
     parser.add_argument("--stage-2", action="store_true", help="upscale and move")
+    parser.add_argument("--debug", action="store_true", help="log level debug")
 
     args = parser.parse_args()
 
+    # Remove sinks from logger
+    logger.remove()
+    # Normally only log INFO, WARNING, and SUCCESS to stdout
+    if not args.debug:
+        logger.add(
+            sys.stdout,
+            level="INFO",
+            filter=lambda record: record["level"].name
+            in ["INFO", "SUCCESS", "WARNING"],
+        )
+
+    # Otherwise, log INFO and DEBUG
+    else:
+        logger.add(
+            sys.stdout,
+            level="DEBUG",
+            filter=lambda record: record["level"].name
+            in ["DEBUG", "INFO", "SUCCESS", "WARNING"],
+        )
+
+    # Always log ERROR and above to stderr
+    logger.add(sys.stderr, level="ERROR")
+
+    # Begin
     for dir in WORKSPACE + [DONE, RAW]:
         dir.mkdir(exist_ok=True)
 
     if args.clean:
+        logger.info("start clean")
         for pth in WORKSPACE:
             for file in pth.iterdir():
                 os.remove(file)
+        logger.success("done clean")
         exit()
 
     if args.restore or args.stage_1:
+        logger.info("start restore")
         for pth in RAW.iterdir():
             restore_scu(pth)
+        logger.success("done restore")
 
     if args.crop or args.stage_1:
+        logger.info("start crop")
         for pth in SCU.iterdir():
-            crop_dynamic(pth)
-        print(
-            "Finished cropping heads. You should manually verify the crops before moving onto --stage-2."
+            crop_dynamic(pth, args.crop_all)
+        logger.success("done crop")
+        logger.warning(
+            "You should manually verify the crops before moving onto --stage-2."
         )
 
     if args.upscale or args.stage_2:
+        logger.info("start upscale")
         for pth in CROP.iterdir():
             upscale(pth)
 
         for pth in RAW.iterdir():
             upscale(pth)
 
+        logger.success("done upscale")
+
     if args.move or args.stage_2:
+        logger.info("start move")
         for pth in SCU.iterdir():
             shutil.copy(pth, DONE / pth.name)
 
@@ -449,13 +542,21 @@ def main():
             if pth.suffix == ".txt":
                 shutil.copy(pth, DONE / pth.name)
 
+        logger.success("done move images")
+
     if args.tag:
+        logger.info("start tag images")
         for pth in DONE.iterdir():
             tag_img(pth, drop_overlap=True)
+        logger.success("done tag images")
 
     if args.tag_prepend:
+        logger.info("start tag prepend")
         for pth in DONE.iterdir():
             prepend_tag(pth, args.tag_prepend)
+        logger.success("done tag prepend")
+
+    logger.success("done")
 
 
 if __name__ == "__main__":
