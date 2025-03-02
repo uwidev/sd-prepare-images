@@ -820,7 +820,10 @@ def crop_all(
 	return ret
 
 
-def crop_person(im_pth: Path, threshold: float = 0.3) -> tuple[BBox, ...]:
+def crop_person(im_pth: Path, threshold: float = 0.3) -> tuple[BBox, ...] | None:
+	if im_pth.suffix not in IMG_EXT:
+		return None
+
 	im = Image.open(im_pth)
 
 	pres = person.detect_person(im, level="x", version="v0", conf_threshold=threshold)
