@@ -729,6 +729,28 @@ def generate_cartesian_crops(
 	return crops
 
 
+def is_crop_significant(
+	ref_img: ImageFile, bbox: BBox, crop_threshold: float = 2 / 3
+) -> Image.Image | None:
+	"""Return crop if crop some ratio smaller than reference image, otherwise None"""
+	width, height = ref_img.size
+	total_pixels_orig = width * height
+
+	crop = ref_img.crop(bbox)
+
+	crop_width, crop_height = crop.size
+	total_pixels_crop = crop_width * crop_height
+	if total_pixels_crop > total_pixels_orig * crop_threshold:
+		logger.info(
+			"skip crop: crop not significant ({:.2f}% > {:.2f}%)",
+			100 * total_pixels_crop / total_pixels_orig,
+			100 * crop_threshold,
+		)
+		return None
+
+	return crop
+
+
 def crop_all(
 	im_pth: Path,
 	crops: Iterable[list[LABEL]],
@@ -785,22 +807,10 @@ def crop_all(
 	logger.debug("finalized bboxes for image {}", labels_bbox)
 
 	im: ImageFile = Image.open(im_pth)
-	# TODO: do not crop if cropping image barely actually crops
-	width, height = im.size
-	total_pixels_orig = width * height
-	crop_threshold = 2 / 3  # must crop to a smaller image than this
 
 	for labels, bbox in labels_bbox:
-		crop = im.crop(bbox)
-		crop_width, crop_height = crop.size
-		total_pixels_crop = crop_width * crop_height
-
-		if total_pixels_crop > total_pixels_orig * crop_threshold:
-			logger.info(
-				"skip crop: crop not significant ({:.2f}% > {:.2f}%)",
-				100 * total_pixels_crop / total_pixels_orig,
-				crop_threshold,
-			)
+		crop = is_crop_significant(im, bbox)
+		if not crop:
 			continue
 
 		cropped_out = CROP / (
@@ -835,10 +845,13 @@ def crop_person(im_pth: Path, threshold: float = 0.3) -> tuple[BBox, ...] | None
 	# plt.show()
 	# return
 
-	out = CROP / f"{im_pth.stem}-person.webp"
+	out = CROP / f"{im_pth.stem}-crop_person.webp"
 	for bbox in bboxes:
+		crop = is_crop_significant(im, bbox)
+		if not crop:
+			continue
+
 		out = exists_handler(out)
-		crop = im.crop(bbox)
 		crop.save(
 			exists_handler(out),
 			lossless=True,
