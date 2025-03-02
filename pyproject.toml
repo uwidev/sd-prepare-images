@@ -1,0 +1,19 @@
+[project]
+name = "sd-prepare-images-1"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "dghs-imgutils>=0.9.4",
+    "loguru>=0.7.3",
+    "matplotlib>=3.10.0",
+    "onnxruntime-gpu>=1.20.1",
+    "opencv-contrib-python>=4.11.0.86",
+    "pyqt6>=6.8.1",
+    "torch>=2.6.0",
+    "transformers>=4.48.3",
+]
+
+[tool.uv]
+override-dependencies = ["opencv-python ; python_version < '0'"]

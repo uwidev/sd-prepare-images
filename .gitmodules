@@ -1,0 +1,3 @@
+[submodule "clip-vit-base-patch32"]
+	path = clip-vit-base-patch32
+	url = https://huggingface.co/openai/clip-vit-base-patch32
