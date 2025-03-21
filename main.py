@@ -730,13 +730,19 @@ def generate_cartesian_crops(
 
 
 def is_crop_significant(
-	ref_img: ImageFile, bbox: BBox, crop_threshold: float = 2 / 3
+	ref_img: ImageFile,
+	bbox: BBox,
+	crop_threshold: float = 2 / 3,
+	*,
+	crop_regardless=False,
 ) -> Image.Image | None:
 	"""Return crop if crop some ratio smaller than reference image, otherwise None"""
+	crop = ref_img.crop(bbox)
+	if crop_regardless:
+		return crop
+
 	width, height = ref_img.size
 	total_pixels_orig = width * height
-
-	crop = ref_img.crop(bbox)
 
 	crop_width, crop_height = crop.size
 	total_pixels_crop = crop_width * crop_height
@@ -757,6 +763,7 @@ def crop_all(
 	*,
 	rollup: bool = False,
 	prefer_largest: bool = False,
+	crop_regardless: bool = False,
 ) -> list[Path] | None:
 	"""Crop all combinations given a list of things to crop.
 
@@ -809,7 +816,7 @@ def crop_all(
 	im: ImageFile = Image.open(im_pth)
 
 	for labels, bbox in labels_bbox:
-		crop = is_crop_significant(im, bbox)
+		crop = is_crop_significant(im, bbox, crop_regardless=crop_regardless)
 		if not crop:
 			continue
 
@@ -830,7 +837,9 @@ def crop_all(
 	return ret
 
 
-def crop_person(im_pth: Path, threshold: float = 0.3) -> tuple[BBox, ...] | None:
+def crop_person(
+	im_pth: Path, threshold: float = 0.3, *, crop_regardless: bool = False
+) -> tuple[BBox, ...] | None:
 	if im_pth.suffix not in IMG_EXT:
 		return None
 
@@ -847,7 +856,7 @@ def crop_person(im_pth: Path, threshold: float = 0.3) -> tuple[BBox, ...] | None
 
 	out = CROP / f"{im_pth.stem}-crop_person.webp"
 	for bbox in bboxes:
-		crop = is_crop_significant(im, bbox)
+		crop = is_crop_significant(im, bbox, crop_regardless=crop_regardless)
 		if not crop:
 			continue
 
@@ -968,7 +977,12 @@ def tag_img(
 			elif clip_resolve == CLIP_RESOLVE.SMART:
 				offset_tokens_towards = resolve_smart(ref_tags)
 				if offset_tokens_towards == -1:  # would be dropping tags
-					write_tags(out, ref_tags)
+					fixed_tags = ref_tags[:]
+					# handle blacklist
+					for tag in ref_tags:
+						if tag in blacklist:
+							fixed_tags.remove(tag)
+					write_tags(out, fixed_tags)
 					return out
 
 	minimum_threshold = 0.01
@@ -988,7 +1002,7 @@ def tag_img(
 	# another way to see this is that user+ai tagged tags get a
 	# 1-conf_rescale_factor bonus and can fully reach a conf of 1.0
 	if ref_tags:
-		conf_rescale_factor = 0.8
+		conf_rescale_factor = 0.66
 		for tag, conf in general_tags.items():
 			general_tags[tag] = conf * conf_rescale_factor
 
@@ -1029,8 +1043,9 @@ def tag_img(
 				continue
 
 			# both user and ai tagged
+			# IMPORTANT: collection of tags are based on minimum threshold
 			general_tags[tag] = max(
-				threshold,
+				minimum_threshold,
 				min(
 					# undo rescale
 					general_tags[tag] / conf_rescale_factor,  # pyright: ignore[reportPossiblyUnboundVariable]
@@ -1068,11 +1083,16 @@ def tag_img(
 			", ".join(filtered_newly_added_tags),
 		)
 
-	for tag in general_tags:
+	for tag in dict(general_tags):  # pyright: ignore
+		if tag == "belly":
+			logger.warning(">>>>>>>>>>>>>>>>>> FOUND BELLY")
 		if tag in whitelist:
 			general_tags[tag] = 1.0  # pyright: ignore
 		elif tag in blacklist + ALWAYS_BLACKLIST:
 			del general_tags[tag]  # pyright: ignore
+			if tag == "belly":
+				logger.warning(">>>>>>>>>>>>>>>>>> DELETE BELLY")
+			logger.warning(general_tags)
 
 	resolved_rating = [rating if rating else sort_tags(ratings)[0]]
 	resolved_chara_tags = ref_chara if ref_chara else list(character_tags.keys())
@@ -1435,16 +1455,17 @@ def downscale(im_pth: Path, total_pixels: int = 2024 * 2024) -> Path | None:
 	img = Image.open(im_pth)
 	width, height = img.size
 
-	if width * height < total_pixels:
+	if width * height >= total_pixels:
+		logger.info("downscaling {}", im_pth.stem)
+		aspect_ratio = width / height
+		new_width = int((total_pixels * aspect_ratio) ** 0.5)
+		new_height = int(new_width / aspect_ratio)
+		img_resized = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+	else:
 		logger.info("image is smaller than desired downscale {}", im_pth.stem)
-		return
+		# just save as webp for compression and easier overwrite management on move
+		img_resized = img
 
-	logger.info("downscaling {}", im_pth.stem)
-	aspect_ratio = width / height
-	new_width = int((total_pixels * aspect_ratio) ** 0.5)
-	new_height = int(new_width / aspect_ratio)
-
-	img_resized = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
 	img_resized.save(
 		out,
 		lossless=True,
@@ -1485,6 +1506,11 @@ def main():
 		"--crop-rollup",
 		action="store_true",
 		help="rollup crops (e.g. head+bust+belly -> head+bust+belly,head+bust,head)",
+	)
+	parser.add_argument(
+		"--crop-regardless",
+		action="store_true",
+		help="crop images even if insigificant",
 	)
 	parser.add_argument(
 		"--prefer-largest", action="store_true", help="prefer largest crop rollup"
@@ -1586,7 +1612,11 @@ def main():
 		# logger.debug("{}", crops)
 		for pth in RAW.iterdir():
 			crop_all(
-				pth, crops, rollup=args.crop_rollup, prefer_largest=args.prefer_largest
+				pth,
+				crops,
+				rollup=args.crop_rollup,
+				prefer_largest=args.prefer_largest,
+				crop_regardless=args.crop_regardless,
 			)
 			# crop_dynamic(
 			# 	pth, crops, rollup=args.crop_rollup, prefer_largest=args.prefer_largest
@@ -1594,7 +1624,7 @@ def main():
 
 	if args.crop_person:
 		for pth in RAW.iterdir():
-			crop_person(pth)
+			crop_person(pth, crop_regardless=args.crop_regardless)
 
 	if args.crop or args.crop_person or args.stage_1:
 		logger.success("done crop")
@@ -1622,14 +1652,14 @@ def main():
 			from_file = SCUTODO / to_file.name
 			os.symlink(to_file.absolute(), from_file)
 
-		for to_file in DOWNSCALE.iterdir():
-			from_file = SCUTODO / to_file.name
-			if from_file.exists():  # overwrite raw with downscaled
-				os.remove(to_file)
-			os.symlink(to_file.absolute(), from_file)
-
 		for to_file in CROP.iterdir():
 			from_file = SCUTODO / to_file.name
+			os.symlink(to_file.absolute(), from_file)
+
+		for to_file in DOWNSCALE.iterdir():
+			from_file = SCUTODO / to_file.name
+			if from_file.exists():  # overwrite raw/cropped with downscaled
+				os.remove(from_file)
 			os.symlink(to_file.absolute(), from_file)
 
 		for pth in SCUTODO.iterdir():
